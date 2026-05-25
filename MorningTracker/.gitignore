@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+*.log
+*.db-wal
+celerybeat-schedule*
+*.log
+api.log
+worker.log
+beat.log
+frontend.log
+
+# Debug Scripts & Temporary Files
+backend/*_check.py
+backend/check_*.py
+backend/test_*.py
+backend/debug_*.py
+backend/exhaustive_*.py
+backend/retrigger_*.py
+backend/trigger_*.py
+backend/list_*.py
+backend/analyze_*.py
+backend/distributed_runner.py
+backend/run_backend.py
+backend/*.txt
+backend/*.res
+backend/*.txt_res
+backend/user_analysis.txt
+
+# Node
+node_modules/
+dist/
+dist-ssr
+*.local
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+playwright/.local-browsers
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Assistant & AI
+.agent/
+.gemini/
+GEMINI.md
+*.png
+graphify-out/

@@ -1,0 +1,97 @@
+import logging
+import json
+from datetime import datetime
+from sqlalchemy import select, update
+from db.database import get_db_sync, ScrapeJob
+
+logger = logging.getLogger("ORCHESTRATOR")
+
+def update_phase_status(db, job_id, phase_name, status):
+    """Updates the internal phase stats JSON for monitoring."""
+    try:
+        res = db.execute(select(ScrapeJob.phase_stats).where(ScrapeJob.id == job_id))
+        phase_stats_raw = res.scalar()
+        current_stats = json.loads(phase_stats_raw) if phase_stats_raw else {}
+        current_stats[phase_name] = {"status": status, "updated_at": datetime.now().isoformat()}
+        db.execute(
+            update(ScrapeJob)
+            .where(ScrapeJob.id == job_id)
+            .values(phase_stats=json.dumps(current_stats), current_phase=phase_name)
+        )
+        db.commit()
+    except Exception as e:
+        logger.error(f"Error updating phase status for {job_id}: {e}")
+
+def _mark_article_processed(job_id: str, article_url: str = None):
+    """
+    Safely increment total_scraped using Redis atomic sets.
+    Ensures idempotency (1 article = 1 increment) regardless of retries.
+    """
+    from scraper.llm import get_redis_sync
+    import hashlib
+    try:
+        r = get_redis_sync()
+        job_set_key = f"nexus:job_processed_set:{job_id}"
+        
+        # 1. Atomic Add to unique set
+        # We MUST use the Original Discovery URL to ensure idempotency across redirects/retries.
+        if not article_url:
+            logger.warning(f"ORCHESTRATOR: _mark_article_processed called without URL for job {job_id}. Falling back to deterministic ghost key.")
+            val = f"unknown_article_slot_{hashlib.md5(job_id.encode()).hexdigest()[:8]}"
+        else:
+            val = article_url
+
+        r.sadd(job_set_key, val)
+        
+        # 2. Get current unique count
+        current_scraped = r.scard(job_set_key)
+        
+        # 3. Sync to DB occasionally (every 5 increments)
+        with get_db_sync() as db:
+            job = db.execute(
+                select(ScrapeJob.total_found, ScrapeJob.status)
+                .where(ScrapeJob.id == job_id)
+            ).first()
+            
+            if not job: return
+
+            # Get discovery status from phase_stats
+            res_stats = db.execute(select(ScrapeJob.phase_stats).where(ScrapeJob.id == job_id))
+            phase_stats_raw = res_stats.scalar()
+            discovery_completed = False
+            if phase_stats_raw:
+                stats = json.loads(phase_stats_raw)
+                if stats.get("Discovery", {}).get("status") == "completed":
+                    discovery_completed = True
+
+            # Guard premature completion:
+            # - no completion before discovery completes
+            # - no completion for zero-discovery jobs (handled by discovery phase itself)
+            found_count = int(job.total_found or 0)
+            is_final = discovery_completed and found_count > 0 and current_scraped >= found_count
+            
+            if current_scraped % 5 == 0 or is_final:
+                db.execute(
+                    update(ScrapeJob)
+                    .where(ScrapeJob.id == job_id)
+                    .values(total_scraped=current_scraped)
+                )
+                db.commit()
+
+            # 4. Finalize job if discovery is done AND all articles are accounted for
+            if is_final and job.status != 'completed':
+                db.execute(
+                    update(ScrapeJob)
+                    .where(ScrapeJob.id == job_id)
+                    .values(
+                        status='completed', 
+                        current_phase='Completed', 
+                        completed_at=datetime.now(),
+                        total_scraped=current_scraped
+                    )
+                )
+                db.commit()
+                logger.info(f"Job {job_id} effectively finalized: {current_scraped}/{job.total_found} articles.")
+                
+    except Exception as e:
+        logger.error(f"Error marking article processed (Redis-Idempotent) for job {job_id}: {e}")
