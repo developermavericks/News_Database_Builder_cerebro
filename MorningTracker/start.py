@@ -130,7 +130,7 @@ def main():
             concurrency = 50 if hw_profile == "64GB" else 1
         
         for i in range(1, num_workers + 1):
-            if i <= 2: # Priority Management Workers (STRICTLY LIMITS to 2 concurrent jobs)
+            if i <= 1: # Priority Management Workers (STRICTLY LIMITS to 1 concurrent job)
                 queues = "priority"
                 worker_concurrency = 1
                 logger.info(f"Starting Management Worker #{i} (Dedicated to Job Control)...")
@@ -142,6 +142,8 @@ def main():
             start_service(f"Celery Worker #{i}", [
                 python_exe, "-m", "celery", "-A", "celery_app", "worker", 
                 "--loglevel=info", "-P", pool_type, "-c", str(worker_concurrency),
+                "--max-tasks-per-child=10",
+                "--max-memory-per-child=300000", # 300MB limit per process
                 "-Q", queues,
                 "--prefetch-multiplier=1", "-n", f"worker{i}@{queues}_node"
             ], backend_dir, f"worker{i}.log")

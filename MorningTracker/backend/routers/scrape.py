@@ -110,6 +110,19 @@ async def list_jobs(limit: int = 20, current_user: TokenData = Depends(get_curre
             job_dict = {c.name: getattr(job, c.name) for c in job.__table__.columns}
             job_dict["user_name"] = user_name or "System/Unknown"
             job_dict["user_email"] = user_email or "N/A"
+            
+            # Fetch the real-time true extracted count from the database
+            count_stmt = select(func.count(Article.id)).where(
+                Article.scrape_job_id.like(f"%{job.id}%"),
+                Article.full_body != None,
+                func.length(Article.full_body) > 100
+            )
+            count_res = await db.execute(count_stmt)
+            true_extracted_count = count_res.scalar() or 0
+            
+            # Override the frozen DB column with the true live count!
+            job_dict["total_scraped"] = true_extracted_count
+            
             jobs.append(job_dict)
             
         return jobs

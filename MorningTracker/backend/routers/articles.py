@@ -45,7 +45,7 @@ async def get_articles(
         if region: stmt = stmt.where(Article.region == region)
         if date_from: stmt = stmt.where(Article.published_at >= date_from)
         if date_to: stmt = stmt.where(Article.published_at <= date_to)
-        if job_id: stmt = stmt.where(Article.scrape_job_id == job_id)
+        if job_id: stmt = stmt.where(Article.scrape_job_id.ilike(f"%{job_id}%"))
         if search:
             stmt = stmt.where(or_(
                 Article.title.ilike(f"%{search}%"),
@@ -61,8 +61,13 @@ async def get_articles(
         res_total = await db.execute(count_stmt)
         total = res_total.scalar()
 
-        # Get results
-        stmt = stmt.order_by(Article.published_at.desc()).offset(offset).limit(page_size)
+        # Get results — extracted articles (full_body present) bubble to the top, then sort by date
+        from sqlalchemy import case as sa_case
+        has_body_expr = sa_case(
+            (and_(Article.full_body != None, func.length(Article.full_body) > 100), 0),
+            else_=1
+        )
+        stmt = stmt.order_by(has_body_expr.asc(), Article.published_at.desc()).offset(offset).limit(page_size)
         res_articles = await db.execute(stmt)
         articles = res_articles.scalars().all()
 
@@ -134,7 +139,7 @@ async def export_csv(
         yield output.getvalue().encode("utf-8")
         
         async with get_db() as db:
-            stmt = select(Article).where(Article.scrape_job_id == job_id)
+            stmt = select(Article).where(Article.scrape_job_id.ilike(f"%{job_id}%"))
             if not current_user.is_admin:
                 stmt = stmt.where(Article.user_id == current_user.id)
                 
@@ -165,7 +170,7 @@ async def export_xlsx(
             raise HTTPException(404, "Job not found or access denied")
         
         # Get articles
-        stmt_count = select(func.count()).where(Article.scrape_job_id == job_id)
+        stmt_count = select(func.count()).where(Article.scrape_job_id.ilike(f"%{job_id}%"))
         if not current_user.is_admin:
             stmt_count = stmt_count.where(Article.user_id == current_user.id)
             
@@ -178,7 +183,7 @@ async def export_xlsx(
             # Hard limit for XLSX to prevent OOM
             raise HTTPException(400, "Job too large for XLSX (Max 5,000 articles). Use CSV export instead.")
 
-        stmt_articles = select(Article).where(Article.scrape_job_id == job_id)
+        stmt_articles = select(Article).where(Article.scrape_job_id.ilike(f"%{job_id}%"))
         if not current_user.is_admin:
             stmt_articles = stmt_articles.where(Article.user_id == current_user.id)
             
@@ -301,7 +306,7 @@ async def export_docx(
             raise HTTPException(404, "Job not found or access denied")
         
         # Get articles
-        stmt_articles = select(Article).where(Article.scrape_job_id == job_id)
+        stmt_articles = select(Article).where(Article.scrape_job_id.ilike(f"%{job_id}%"))
         if not current_user.is_admin:
             stmt_articles = stmt_articles.where(Article.user_id == current_user.id)
             
@@ -389,7 +394,7 @@ async def delete_bulk_articles(
         if region: stmt = stmt.where(Article.region == region)
         if date_from: stmt = stmt.where(Article.published_at >= date_from)
         if date_to: stmt = stmt.where(Article.published_at <= date_to)
-        if job_id: stmt = stmt.where(Article.scrape_job_id == job_id)
+        if job_id: stmt = stmt.where(Article.scrape_job_id.ilike(f"%{job_id}%"))
         if search:
             stmt = stmt.where(or_(
                 Article.title.ilike(f"%{search}%"),

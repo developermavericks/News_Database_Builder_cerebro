@@ -17,6 +17,8 @@
   --border:    hsl(var(--accent-h), 15%, 85%);
   --text:      hsl(var(--accent-h), 30%, 15%);
   --muted:     hsl(var(--accent-h), 15%, 45%);
+  --nav-active: hsla(var(--accent-h), var(--accent-s), var(--accent-l), 0.1);
+  --nav-active-border: hsla(var(--accent-h), var(--accent-s), var(--accent-l), 0.3);
   
   /* Glassmorphism Tokens */
   --glass-bg: rgba(255, 255, 255, 0.7);
@@ -55,6 +57,7 @@ html { scrollbar-color: var(--border) var(--bg); }
 .app-shell {
   display: flex;
   min-height: 100vh;
+  border: 5px solid red;
 }
 
 /* ─── Sidebar ─────────────────────────────────────────────────────────── */

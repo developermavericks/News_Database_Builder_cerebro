@@ -40,13 +40,14 @@ class ScraperPersistence:
     _sync_clients: dict = {}
     
     @classmethod
-    def get_sync_client(cls, proxy: Optional[str] = None, timeout: int = 15) -> httpx.Client:
-        if proxy not in cls._sync_clients or cls._sync_clients[proxy].is_closed:
-            cls._sync_clients[proxy] = httpx.Client(
-                proxy=proxy,
-                timeout=timeout, 
-                follow_redirects=True, 
-                limits=httpx.Limits(max_connections=100, max_keepalive_connections=50),
+    def get_sync_client(cls, proxy: Optional[str] = None, timeout: int = 15):
+        from curl_cffi import requests
+        if proxy not in cls._sync_clients:
+            proxies = {"http": proxy, "https": proxy} if proxy else None
+            cls._sync_clients[proxy] = requests.Session(
+                impersonate="chrome110",
+                proxies=proxies,
+                timeout=timeout,
                 verify=False
             )
         return cls._sync_clients[proxy]
@@ -226,75 +227,117 @@ def scrape_article_node(self, article_data, job_id, sector, region, user_id, sca
         
         # --- TIRED ESCALATION SCRAPING FLOW ---
         html = None
-        timeout = 30
+        timeout = 20  # Reduced to 20s to force fast rotation of dead proxy IPs
         from scraper.network import NetworkHandler
         from scraper.parser import is_junk_body
         
-        # STAGE 1: Crawlbase AI Scraper (Best Readability)
-        logger.info(f"Stage 1 Scraping (AI) for {resolved_url}")
-        try:
-            html = run_async(NetworkHandler.fetch_crawlbase(resolved_url, scraper='generic-article'), timeout=timeout)
-        except Exception as e:
-            logger.debug(f"Stage 1 failed: {e}")
+        # STAGE 1: High-Speed Direct Proxy (StormProxies with TLS Spoofing)
+        logger.info(f"Stage 1 Scraping (Direct TLS Proxy) for {resolved_url}")
+        
+        import requests
+        import time
+        import random
+        from scraper.network import load_proxies, ProxyGuard, track_stormproxy
+        
+        max_attempts = 5
+        for attempt in range(max_attempts):
+            try:
+                proxy_pool = load_proxies()
+                proxy = ProxyGuard.get_healthy_proxy(proxy_pool)
+                # Ensure correct requests proxy dict format
+                proxies = {"http": proxy, "https": proxy} if proxy else None
+                
+                logger.debug(f"[Attempt {attempt+1}/{max_attempts}] Fetching {resolved_url} via {proxy}")
+                resp = requests.get(
+                    resolved_url,
+                    proxies=proxies,
+                    timeout=timeout,
+                    verify=False,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Accept-Language": "en-US,en;q=0.9",
+                    }
+                )
+                if resp.status_code == 200:
+                    html = resp.text
+                    track_stormproxy("200_SUCCESS_ARTICLE", resolved_url)
+                    break # Success!
+                elif resp.status_code == 429:
+                    track_stormproxy("429_RATE_LIMIT", resolved_url)
+                    logger.debug(f"429 Rate Limit on attempt {attempt+1}. Retrying...")
+                else:
+                    track_stormproxy(f"FAILED_{resp.status_code}", resolved_url)
+                    logger.debug(f"HTTP {resp.status_code} on attempt {attempt+1}. Retrying...")
+            except Exception as e:
+                err_str = str(e)
+                if "502" in err_str or "Proxy Error" in err_str:
+                    track_stormproxy("502_PROXY_ERROR_ARTICLE", resolved_url, err_str)
+                    logger.debug(f"502 Proxy Error on attempt {attempt+1}. Retrying node...")
+                elif "timeout" in err_str.lower():
+                    track_stormproxy("TIMEOUT_ARTICLE", resolved_url, err_str)
+                    logger.debug(f"Timeout on attempt {attempt+1}. Retrying node...")
+                else:
+                    try: track_stormproxy("EXCEPTION_ARTICLE", resolved_url, err_str)
+                    except: pass
+                    logger.debug(f"Stage 1 exception on attempt {attempt+1}: {e}")
+            
+            # Wait with jitter before retry to let residential pool rotate/cool down
+            if attempt < max_attempts - 1:
+                time.sleep(random.uniform(1.5, 3.5))
 
         # Escalation criteria: less than 1200 chars or contains 'read more' / snippet markers
         def needs_escalation(content):
             if not content: return True
             if len(content) < 1200: return True
             content_lower = content.lower()
-            
+
             # Detect Cloudflare / CAPTCHA / Bot block pages
-            block_markers = ["access denied", "cloudflare", "enable javascript", "please wait...", "security check", "verify you are human", "captcha", "attention required!"]
+            block_markers = [
+                "access denied", "cloudflare", "enable javascript", "please wait...",
+                "security check", "verify you are human", "captcha", "attention required!",
+                "robot check", "unusual traffic", "prove you are a human"
+            ]
             if any(m in content_lower for m in block_markers):
                 return True
-                
-            # Check if content looks like a truncated snippet
-            snippet_markers = ["read more", "continue reading", "subscription", "subscribe to", "register to read", "sign in to continue", "log in to read", "create a free account to read", "unlock this article"]
+
+            # Check if content looks like a truncated snippet or soft-paywall
+            snippet_markers = [
+                "read more", "continue reading", "subscription", "subscribe to",
+                "register to read", "sign in to continue", "log in to read",
+                "create a free account to read", "unlock this article",
+                "support our journalism", "you've reached your article limit",
+                "you have reached your article limit", "free account to continue",
+                "subscribe for unlimited access", "this content is for subscribers",
+                "premium article", "read the full article"
+            ]
             if any(m in content_lower for m in snippet_markers):
                 return True
             return False
 
-        # STAGE 2: Crawlbase JS Deep-Fetch (Bypass AI confusion)
-        if needs_escalation(html):
-            logger.info(f"Stage 2 Scraping (JS Deep-Fetch) for {resolved_url}")
-            try:
-                # Normal mode but with heavy JS and waiting
-                js_html = run_async(NetworkHandler.fetch_crawlbase(resolved_url, scraper=None, use_js=True), timeout=timeout)
-                if js_html and len(js_html) > len(html or ""):
-                    html = js_html
-            except Exception as e:
-                logger.debug(f"Stage 2 failed: {e}")
-
-        # STAGE 3: High-Quality Rotating Proxy Fallback (DataImpulse/Webshare)
-        if needs_escalation(html):
-            logger.info(f"Stage 3 Scraping (Rotating Proxy Fallback) for {resolved_url}")
-            try:
-                from scraper.network import load_proxies, ProxyGuard, track_stormproxy
-                proxy_pool = load_proxies()
-                proxy = ProxyGuard.get_healthy_proxy(proxy_pool)
-                client = ScraperPersistence.get_sync_client(proxy=proxy, timeout=timeout)
-                resp = client.get(
-                    resolved_url,
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                        "Accept-Language": "en-US,en;q=0.9",
-                    },
-                )
-                if resp.status_code == 200:
-                    if len(resp.text) > len(html or ""):
-                        html = resp.text
-                        track_stormproxy("200_SUCCESS_ARTICLE", resolved_url)
-                    else:
-                        track_stormproxy("200_SUCCESS_NO_IMPROVEMENT", resolved_url)
-                else:
-                    track_stormproxy(f"FAILED_{resp.status_code}", resolved_url)
-            except Exception as e:
-                try:
-                    from scraper.network import track_stormproxy
-                    track_stormproxy("EXCEPTION_ARTICLE", resolved_url, str(e))
-                except: pass
-                logger.debug(f"Stage 3 failed: {e}")
+        # ==========================================
+        # TURBO MODE: STAGE 2 & 3 BYPASSED FOR SPEED
+        # ==========================================
+        # To scrap 11 sectors in 24 hours, we must rely solely on the high-speed Stage 1 Proxy.
+        # Fallbacks (Crawlbase) take 30-60s per failure, causing the cluster to bog down.
+        # 
+        # if needs_escalation(html):
+        #     logger.info(f"Stage 2 Scraping (Crawlbase AI Fallback) for {resolved_url}")
+        #     try:
+        #         ai_html = run_async(NetworkHandler.fetch_crawlbase(resolved_url, scraper='generic-article'), timeout=timeout)
+        #         if ai_html and len(ai_html) > len(html or ""):
+        #             html = ai_html
+        #     except Exception as e:
+        #         logger.debug(f"Stage 2 failed: {e}")
+        #
+        # if needs_escalation(html):
+        #     logger.info(f"Stage 3 Scraping (Crawlbase JS Deep-Fetch) for {resolved_url}")
+        #     try:
+        #         js_html = run_async(NetworkHandler.fetch_crawlbase(resolved_url, scraper=None, use_js=True), timeout=timeout)
+        #         if js_html and len(js_html) > len(html or ""):
+        #             html = js_html
+        #     except Exception as e:
+        #         logger.debug(f"Stage 3 failed: {e}")
 
         # STAGE 4: Stealth Browser with selector waits (handles skeleton placeholders)
         # BYPASSED FOR SPEED
@@ -323,15 +366,20 @@ def scrape_article_node(self, article_data, job_id, sector, region, user_id, sca
             url_hash = hashlib.md5(resolved_url.encode()).hexdigest()
             redis.sadd("nexus:processed_urls", url_hash)
             
-            logger.info(f"Scraped article {article_id}. Triggering enrichment...")
-            enrich_article_node.delay(article_id, original_url=url) # Pass original URL forward
+            # --- SPEED OPTIMIZATION: Bypass AI Enrichment ---
+            # User requested to skip Groq summaries for faster processing.
+            # logger.info(f"Scraped article {article_id}. Triggering enrichment...")
+            # enrich_article_node.delay(article_id, original_url=url) # Pass original URL forward
+            
+            # Immediately mark as processed so the UI updates instantly
+            _mark_article_processed(job_id, article_url=url) 
         else:
             _mark_article_processed(job_id, article_url=url) # Standardized on ORIGINAL URL
 
     except Exception as e:
         logger.error(f"Scrape node failed for {article_data.get('url')}: {e}")
         if self.request.retries >= self.max_retries:
-            _mark_article_processed(job_id)
+            _mark_article_processed(job_id, article_url=article_data.get("url") or article_data.get("link"))
         raise self.retry(exc=e)
 
 # ─── Enrichment Node (Compute Intensive) ──────────────────────────────────────
@@ -426,3 +474,16 @@ def complete_stale_jobs():
             db.commit()
     except Exception as e:
         logger.error(f"Stale job watchdog error: {e}")
+
+# ─── Night Shift Re-queuer ───────────────────────────────────────────────────
+
+@celery_app.task(name="scraper.tasks.requeue_dead_articles")
+def requeue_dead_articles():
+    """
+    Disabled by user request to prevent endless retrying of dead links
+    that block the mega mission from moving to the next job.
+    """
+    logger.info("Night Shift Re-queuer is disabled. Dead links will not be retried.")
+    return
+    pass
+

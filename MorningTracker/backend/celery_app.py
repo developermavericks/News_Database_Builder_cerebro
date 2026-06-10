@@ -67,6 +67,10 @@ app.conf.update(
             "task": "scraper.tasks.complete_stale_jobs",
             "schedule": 5 * 60,  # Every 5 minutes
         },
+        "requeue-dead-articles-hourly": {
+            "task": "scraper.tasks.requeue_dead_articles",
+            "schedule": 60 * 60,  # Every 60 minutes
+        },
     }
 )
 

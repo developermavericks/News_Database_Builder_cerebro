@@ -121,8 +121,15 @@ def extract_body(html_content: str, url: str = None) -> Optional[str]:
             favor_recall=True,
             deduplicate=True
         )
-        if res and not is_junk_body(res):
+        if res:
+            if is_junk_body(res):
+                return None # INSTANT DROP: It's a paywall/captcha, no need to run 6 other parsers!
             candidates.append(res)
+            # ==========================================
+            # TURBO MODE EARLY EXIT (CPU OPTIMIZATION)
+            # ==========================================
+            if len(res) > 800:
+                return re.sub(r'\n{3,}', '\n\n', res).strip()
             
         res_bare = trafilatura.bare_extraction(
             html_content, 
@@ -130,8 +137,12 @@ def extract_body(html_content: str, url: str = None) -> Optional[str]:
             include_tables=True,
             favor_recall=True
         )
-        if res_bare and res_bare.get('text') and not is_junk_body(res_bare.get('text')):
+        if res_bare and res_bare.get('text'):
+            if is_junk_body(res_bare.get('text')):
+                return None # INSTANT DROP
             candidates.append(res_bare.get('text'))
+            if len(res_bare.get('text')) > 800:
+                return re.sub(r'\n{3,}', '\n\n', res_bare.get('text')).strip()
     except: pass
 
     # Strategy 2: JSON-LD articleBody (The "Backdoor")

@@ -67,7 +67,10 @@ export default function ArticlesBrowser() {
   const load = useCallback((pg = 1) => {
     fetchArticles({ page: pg, ...filters });
     setPage(pg);
+    setInputPage(pg);
   }, [filters, fetchArticles]);
+
+  const [inputPage, setInputPage] = useState(1);
 
   useEffect(() => { load(1); }, [load]);
 
@@ -162,7 +165,12 @@ export default function ArticlesBrowser() {
             ) : articles.map((a) => (
               <tr key={a.id} style={{ cursor: "pointer" }} onClick={() => openArticle(a.id)}>
                 <td style={{ maxWidth: 400 }}>
-                  <div style={{ fontWeight: 600, fontSize: '15px', color: 'var(--text)', marginBottom: '4px' }}>{a.title}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                    <div style={{ fontWeight: 600, fontSize: '15px', color: 'var(--text)' }}>{a.title}</div>
+                    {(a.full_body && a.full_body.length > 100) && (
+                      <span className="badge badge-success" style={{ fontSize: '9px', padding: '2px 6px', background: 'rgba(16, 185, 129, 0.1)', color: 'var(--success)', border: '1px solid rgba(16, 185, 129, 0.2)' }}>Extracted</span>
+                    )}
+                  </div>
                   <div style={{ fontSize: '12px', color: 'var(--muted)' }}>{a.author || "Global Desk"}</div>
                 </td>
                 <td style={{ fontSize: '13px' }}>{a.agency || "Unknown Source"}</td>
@@ -193,8 +201,33 @@ export default function ArticlesBrowser() {
           <button className="btn btn-secondary" disabled={page <= 1} onClick={() => load(page - 1)}>
             Previous
           </button>
-          <span style={{ fontSize: 13, color: "var(--muted)", fontWeight: '500' }}>
-            {page} / {totalPages}
+          <span style={{ fontSize: 13, color: "var(--muted)", fontWeight: '500', display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <input 
+              type="number" 
+              value={inputPage}
+              onChange={(e) => setInputPage(e.target.value)}
+              onBlur={() => {
+                let p = parseInt(inputPage);
+                if (isNaN(p) || p < 1) p = 1;
+                if (p > totalPages) p = totalPages;
+                setInputPage(p);
+                if (p !== page) load(p);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.target.blur();
+                }
+              }}
+              style={{ 
+                width: '50px', 
+                textAlign: 'center', 
+                background: 'transparent', 
+                border: '1px solid var(--border)', 
+                color: 'var(--text)', 
+                borderRadius: '4px',
+                padding: '2px 4px'
+              }} 
+            /> / {totalPages}
           </span>
           <button className="btn btn-secondary" disabled={page >= totalPages} onClick={() => load(page + 1)}>
             Next

@@ -87,11 +87,15 @@ def random_ua() -> str:
 # update_phase_status moved to orchestrator.py
 
 def is_job_cancelled(job_id: str) -> bool:
+    if not job_id: return False
     from scraper.llm import get_redis_sync
     try:
         r = get_redis_sync()
-        if r.get("nexus:global_stop") or r.sismember("nexus:cancelled_jobs", job_id):
+        if r.get("nexus:global_stop"):
             return True
+        for j_id in job_id.split(','):
+            if r.sismember("nexus:cancelled_jobs", j_id.strip()):
+                return True
         return False
     except:
         return False
@@ -289,7 +293,7 @@ async def scrape_only(article: dict, job_id: str, sector: str, region: str, user
                         set_={
                             "full_body": val_dict["full_body"], "author": val_dict["author"],
                             "agency": val_dict["agency"], "extra_metadata": val_dict["extra_metadata"],
-                            "published_at": val_dict["published_at"], "scrape_job_id": val_dict["scrape_job_id"],
+                            "published_at": val_dict["published_at"], "scrape_job_id": Article.scrape_job_id + ',' + val_dict["scrape_job_id"],
                             "resolved_url": val_dict["resolved_url"]
                         }
                     ).returning(Article.id)
@@ -299,7 +303,7 @@ async def scrape_only(article: dict, job_id: str, sector: str, region: str, user
                         set_={
                             "full_body": val_dict["full_body"], "author": val_dict["author"],
                             "agency": val_dict["agency"], "extra_metadata": val_dict["extra_metadata"],
-                            "published_at": val_dict["published_at"], "scrape_job_id": val_dict["scrape_job_id"],
+                            "published_at": val_dict["published_at"], "scrape_job_id": Article.scrape_job_id + ',' + val_dict["scrape_job_id"],
                             "resolved_url": val_dict["resolved_url"]
                         }
                     )
@@ -363,7 +367,7 @@ def bulk_insert_placeholders(db, job_id, articles, sector, region, user_id):
                     "published_at": stmt.excluded.published_at,
                     "sector": stmt.excluded.sector,
                     "region": stmt.excluded.region,
-                    "scrape_job_id": stmt.excluded.scrape_job_id,
+                    "scrape_job_id": Article.scrape_job_id + ',' + stmt.excluded.scrape_job_id,
                     "user_id": stmt.excluded.user_id,
                     "agency": stmt.excluded.agency,
                     "resolved_url": None,
@@ -442,7 +446,7 @@ async def run_scrape_job(job_id, sector, region, date_from, date_to, search_mode
                     
                     await asyncio.sleep(random.uniform(0.1, 0.4)) # Fast rotation jitter
                     proxy = ProxyGuard.get_healthy_proxy(proxy_pool)
-                    xml_content = await NetworkHandler.get_google_rss(rss_url, proxy=proxy)
+                    xml_content = await NetworkHandler.get_google_rss(rss_url, proxy=None)
                     
                     if xml_content:
                         feed = feedparser.parse(xml_content)

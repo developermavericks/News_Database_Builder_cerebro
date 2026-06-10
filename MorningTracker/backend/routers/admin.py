@@ -140,6 +140,15 @@ async def get_job_detail(
     job_dict["user_name"] = name
     job_dict["user_email"] = email
     
+    # Fetch real-time count just like the Live Tracker
+    count_stmt = select(func.count(Article.id)).where(
+        Article.scrape_job_id.like(f"%{job.id}%"),
+        Article.full_body != None,
+        func.length(Article.full_body) > 100
+    )
+    count_res = await db.execute(count_stmt)
+    job_dict["total_scraped"] = count_res.scalar() or 0
+    
     return job_dict
 
 @router.get("/users")

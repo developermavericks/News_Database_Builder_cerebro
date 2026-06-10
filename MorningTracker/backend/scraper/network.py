@@ -17,13 +17,17 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-def track_stormproxy(status_code: str, url: str, error: str = ""):
+def track_stormproxy(status: str, url: str, error: str = ""):
     try:
-        import os, datetime
-        log_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "stormproxy_tracker.log")
-        with open(log_file, "a", encoding="utf-8") as f:
-            t = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            f.write(f"[{t}] STATUS: {status_code} | URL: {url} | ERR: {error}\n")
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_line = f"[{timestamp}] STATUS: {status} | URL: {url} | ERR: {error}\n"
+        # Use absolute path to backend directory
+        import os
+        backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        log_path = os.path.join(backend_dir, "stormproxy_tracker.log")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(log_line)
     except Exception:
         pass
 
@@ -172,9 +176,11 @@ class NetworkHandler:
             return cls._clients[proxy]
 
     @staticmethod
-    async def fetch_crawlbase(url: str, scraper: Optional[str] = None, use_js: bool = True) -> Optional[str]:
+    async def fetch_crawlbase(url: str, scraper: Optional[str] = None, use_js: bool = False) -> Optional[str]:
         """Fetches a URL using Crawlbase API with dynamic strategy selection."""
-        token = os.environ.get("CRAWLBASE_TOKEN")
+        # Use JS Token if use_js is True, else Regular Token
+        token = os.environ.get("CRAWLBASE_JS_TOKEN") if use_js else os.environ.get("CRAWLBASE_TOKEN")
+        
         if not token or not CrawlingAPI:
             return None
         
@@ -192,7 +198,9 @@ class NetworkHandler:
                         options['scraper'] = scraper
                     
                     # Advanced stealth parameters
-                    options['javascript'] = 'true'
+                    if use_js:
+                        options['javascript'] = 'true'
+                        
                     options['proxy_type'] = 'smart'
                     options['page_wait'] = '5000'
                     # Wait for any common article container to ensure content is loaded
@@ -284,7 +292,7 @@ class NetworkHandler:
                     else:
                         track_stormproxy(f"FAILED_{resp.status_code}", url)
             except Exception as e:
-                track_stormproxy("EXCEPTION", url, str(e))
+                track_stormproxy("EXCEPTION", url, repr(e))
 
         # 2. Try Crawlbase as fallback
         cb_content = await NetworkHandler.fetch_crawlbase(url)
@@ -340,26 +348,6 @@ class NetworkHandler:
             proxy_attempts += 1
             await asyncio.sleep(0.5)
 
-        # Final fallback: Direct (no proxy). This is critical when the proxy fleet is blocked by Google
-        # but the machine IP can still access RSS.
-        try:
-            async with rate_limiter:
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                }
-                client = await NetworkHandler.get_async_client(proxy=None)
-                resp = await client.get(url, headers=headers, follow_redirects=True, timeout=10)
-                if resp.status_code == 200:
-                    content = resp.text
-                    if "<rss" in content.lower() or "<feed" in content.lower():
-                        if redis is not None:
-                            try:
-                                await asyncio.wait_for(redis.setex(cache_key, 3600, content), timeout=2)
-                            except Exception:
-                                pass
-                        return content
-        except Exception as e:
-            logger.debug(f"RSS Discovery Direct Fallback Error: {e}")
+        # Removed Direct Fallback to prevent server IP bans. If proxies fail, we gracefully return None.
 
         return None
